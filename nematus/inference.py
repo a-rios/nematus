@@ -27,17 +27,17 @@ class InferenceModelSet(object):
         self._cached_sample_graph = None
         self._cached_beam_search_graph = None
 
-    def sample(self, session, x, x_mask):
+    def sample(self, session, x, x_mask, return_alignments=False):
         # Sampling is not implemented for ensembles, so just use the first
         # model.
         model = self._models[0]
         if self._cached_sample_graph is None:
             self._cached_sample_graph = rnn_inference.SampleGraph(model)
         return rnn_inference.sample(session, model, x, x_mask,
-                                    self._cached_sample_graph)
+                                    self._cached_sample_graph, return_alignments=return_alignments)
 
     def beam_search(self, session, x, x_mask, beam_size,
-                    normalization_alpha=0.0):
+                    normalization_alpha=0.0, return_alignments=False):
         """Beam search using all models contained in this model set.
 
         If using an ensemble (i.e. more than one model), then at each timestep
@@ -64,12 +64,12 @@ class InferenceModelSet(object):
                 rnn_inference.BeamSearchGraph(self._models, beam_size)
         return rnn_inference.beam_search(session, self._models, x, x_mask,
                                          beam_size, normalization_alpha,
-                                         self._cached_beam_search_graph)
+                                         self._cached_beam_search_graph, return_alignments=return_alignments)
 
 
 def translate_file(input_file, output_file, session, models, configs,
                    beam_size=12, nbest=False, minibatch_size=80,
-                   maxibatch_size=20, normalization_alpha=1.0):
+                   maxibatch_size=20, normalization_alpha=1.0, return_alignments=False):
     """Translates a source file using a translation model (or ensemble).
 
     Args:
@@ -84,6 +84,13 @@ def translate_file(input_file, output_file, session, models, configs,
         maxibatch_size: number of minibatches to read and sort, pre-translation.
         normalization_alpha: alpha parameter for length normalization.
     """
+
+    def print_alignments(alignments, models):
+        for i in range(len(alignments)):
+            for j in range(models):
+                print("values of word i {} in model j {} ".format(i,j))
+                print(alignments[i][j])
+        #print("alignments: {}".format(alignments))
 
     def translate_maxibatch(maxibatch, model_set, num_to_target,
                             num_prev_translated):
@@ -107,19 +114,26 @@ def translate_file(input_file, output_file, session, models, configs,
         # Translate the minibatches and store the resulting beam (i.e.
         # translations and scores) for each sentence.
         beams = []
+        alignments = []
         for x in minibatches:
             y_dummy = numpy.zeros(shape=(len(x),1))
             x, x_mask, _, _ = util.prepare_data(x, y_dummy, configs[0].factors,
                                                 maxlen=None)
-            sample = model_set.beam_search(
+            sample, scores = model_set.beam_search(
                 session=session,
                 x=x,
                 x_mask=x_mask,
                 beam_size=beam_size,
-                normalization_alpha=normalization_alpha)
+                normalization_alpha=normalization_alpha, 
+                return_alignments=return_alignments)
+            print("scores {}".format(scores.shape))
             beams.extend(sample)
+            alignments.extend(scores)
             num_translated = num_prev_translated + len(beams)
             logging.info('Translated {} sents'.format(num_translated))
+
+        if(return_alignments):
+            print_alignments(alignments , len(model_set._models))
 
         # Put beams into the same order as the input maxibatch.
         tmp = numpy.array(beams, dtype=numpy.object)

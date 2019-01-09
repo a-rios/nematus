@@ -4,14 +4,12 @@ import tensorflow as tf
 
 def sample(session, model, x, x_mask, graph=None):
     """Randomly samples translations from a RNNModel.
-
     Args:
         session: TensorFlow session.
         model: a RNNModel object.
         x: Numpy array with shape (factors, max_seq_len, batch_size).
         x_mask: Numpy array with shape (max_seq_len, batch_size).
         graph: a SampleGraph object (to allow reuse if sampling repeatedly).
-
     Returns:
         A list of NumPy arrays (one for each input sentence in x).
     """
@@ -30,13 +28,11 @@ def sample(session, model, x, x_mask, graph=None):
 
 
 def beam_search(session, models, x, x_mask, beam_size,
-                normalization_alpha=0.0, graph=None):
+                normalization_alpha=0.0, graph=None, return_alignments=False):
     """Beam search using one or more RNNModels..
-
     If using an ensemble (i.e. more than one model), then at each timestep
     the top k tokens are selected according to the sum of the models' log
     probabilities (where k is the beam size).
-
     Args:
         session: TensorFlow session.
         models: a list of RNNModel objects.
@@ -45,7 +41,6 @@ def beam_search(session, models, x, x_mask, beam_size,
         beam_size: beam width.
         normalization_alpha: length normalization hyperparamter.
         graph: a BeamSearchGraph (to allow reuse if searching repeatedly).
-
     Returns:
         A list of lists of (translation, score) pairs. The outer list contains
         one list for each input sentence in the batch. The inner lists contain
@@ -54,33 +49,33 @@ def beam_search(session, models, x, x_mask, beam_size,
     """
     def normalize(sent, cost):
         return (sent, cost / (len(sent) ** normalization_alpha))
+    
 
     x_repeat = numpy.repeat(x, repeats=beam_size, axis=-1)
     x_mask_repeat = numpy.repeat(x_mask, repeats=beam_size, axis=-1)
+    alignments = None
     feed_dict = {}
     for model in models:
         feed_dict[model.inputs.x] = x_repeat
         feed_dict[model.inputs.x_mask] = x_mask_repeat
     if graph is None:
-        graph = BeamSearchGraph(models, beam_size)
-    ys, parents, costs = session.run(graph.outputs, feed_dict=feed_dict)
+        graph = BeamSearchGraph(models, beam_size, return_alignments=return_alignments)
+    ys, parents, costs, alignments = session.run(graph.outputs, feed_dict=feed_dict)
     beams = []
     for beam in _reconstruct_hypotheses(ys, parents, costs, beam_size):
         if normalization_alpha > 0.0:
             beam = [normalize(sent, cost) for (sent, cost) in beam]
-        beams.append(sorted(beam, key=lambda (sent, cost): cost))
-    return beams
+        beams.append(sorted(beam, key=lambda (sent, cost): cost)) #TODO: sort alignments?
+    return beams, alignments
 
 
 def _reconstruct_hypotheses(ys, parents, cost, beam_size):
     """Converts raw beam search outputs into a more usable form.
-
     Args:
         ys: NumPy array with shape (max_seq_len, beam_size*batch_size).
         parents: NumPy array with same shape as ys.
         cost: NumPy array with same shape as ys.
         beam_size: integer.
-
     Returns:
         A list of lists of (translation, score) pairs. The outer list contains
         one list for each input sentence in the batch. The inner lists contain
@@ -119,28 +114,31 @@ class SampleGraph(object):
         return (self._sampled_ys)
 
 
+
 """Builds a graph fragment for beam search over one or more RNNModels."""
 class BeamSearchGraph(object):
-    def __init__(self, models, beam_size):
+    def __init__(self, models, beam_size, return_alignments=False):
         self._beam_size = beam_size
-        self._sampled_ys, self._parents, self._cost = \
-            construct_beam_search_ops(models, beam_size)
+        self._sampled_ys, self._parents, self._cost, self._alignments = \
+            construct_beam_search_ops(models, beam_size, return_alignments=return_alignments)
 
     @property
     def outputs(self):
-        return (self._sampled_ys, self._parents, self._cost)
+        return (self._sampled_ys, self._parents, self._cost, self._alignments)
 
     @property
     def beam_size(self):
         return self._beam_size
+    
+    @property
+    def alignments(self):
+        return self._alignments
 
 
 def construct_sampling_ops(model):
     """Builds a graph fragment for sampling over a RNNModel.
-
     Args:
         model: a RNNModel.
-
     Returns:
         A Tensor with shape (max_seq_len, batch_size) containing one sampled
         translation for each input sentence in model.inputs.x.
@@ -202,9 +200,8 @@ def construct_sampling_ops(model):
     return sampled_ys
 
 
-def construct_beam_search_ops(models, beam_size):
+def construct_beam_search_ops(models, beam_size, return_alignments=False):
     """Builds a graph fragment for beam search over one or more RNNModels.
-
     Strategy:
         compute the log_probs - same as with sampling
         for sentences that are ended set log_prob(<eos>)=0, log_prob(not eos)=-inf
@@ -222,7 +219,7 @@ def construct_beam_search_ops(models, beam_size):
     # parameters that are allowed to vary across models, the first model's
     # settings take precedence.
     decoder = models[0].decoder
-    batch_size = tf.shape(decoder.init_state)[0]
+    batch_size = tf.shape(decoder.init_state)[0] # Tensor("strided_slice:0", shape=(), dtype=int32)
     embedding_size = decoder.embedding_size
     translation_maxlen = decoder.translation_maxlen
     target_vocab_size = decoder.target_vocab_size
@@ -250,8 +247,14 @@ def construct_beam_search_ops(models, beam_size):
                 name='parent_idx_array')
     init_base_states = [m.decoder.init_state for m in models]
     init_high_states = [[m.decoder.init_state] * high_depth for m in models]
+    alignment_array = tf.TensorArray(
+                dtype=tf.float32,
+                size=translation_maxlen,
+                clear_after_read=True,
+                name='alignment_tensor_array')
+    
     init_loop_vars = [i, init_base_states, init_high_states, init_ys, init_embs,
-                      init_cost, ys_array, p_array]
+                      init_cost, ys_array, p_array, alignment_array]
 
     # Prepare cost matrix for completed sentences -> Prob(EOS) = 1 and Prob(x) = 0
     eos_log_probs = tf.constant(
@@ -259,20 +262,23 @@ def construct_beam_search_ops(models, beam_size):
                         dtype=tf.float32)
     eos_log_probs = tf.tile(eos_log_probs, multiples=[batch_size,1])
 
-    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array):
+    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array, alignment_array):
         return tf.logical_and(
                 tf.less(i, translation_maxlen),
                 tf.reduce_any(tf.not_equal(prev_ys, 0)))
 
-    def body(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array):
+    def body(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array, alignment_array):
         # get predictions from all models and sum the log probs
         sum_log_probs = None
         base_states = [None] * len(models)
         high_states = [None] * len(models)
+        
         for j in range(len(models)):
             d = models[j].decoder
             states1 = d.grustep1.forward(prev_base_states[j], prev_embs[j])
             att_ctx = d.attstep.forward(states1)
+            scores = d.attstep.alignments ## seqLen x batch
+            alignment_array = alignment_array.write(i+j, value=scores) 
             base_states[j] = d.grustep2.forward(states1, att_ctx)
             if d.high_gru_stack == None:
                 stack_output = base_states[j]
@@ -321,7 +327,7 @@ def construct_beam_search_ops(models, beam_size):
         ys_array = ys_array.write(i, value=new_ys)
         p_array = p_array.write(i, value=survivor_idxs)
 
-        return i+1, new_base_states, new_high_states, new_ys, new_embs, new_cost, ys_array, p_array
+        return i+1, new_base_states, new_high_states, new_ys, new_embs, new_cost, ys_array, p_array, alignment_array
 
 
     final_loop_vars = tf.while_loop(
@@ -329,10 +335,12 @@ def construct_beam_search_ops(models, beam_size):
                         body=body,
                         loop_vars=init_loop_vars,
                         back_prop=False)
-    i, _, _, _, _, cost, ys_array, p_array = final_loop_vars
+    i, _, _, _, _, cost, ys_array, p_array, alignment_array = final_loop_vars
 
     indices = tf.range(0, i)
     sampled_ys = ys_array.gather(indices)
     parents = p_array.gather(indices)
     cost = tf.abs(cost) #to get negative-log-likelihood
-    return sampled_ys, parents, cost
+    alignments = alignment_array.gather(indices*len(models)) # (translation_maxlen * len(models), seqLen, batch_size)
+    return sampled_ys, parents, cost, alignments
+
