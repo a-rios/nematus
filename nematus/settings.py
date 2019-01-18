@@ -93,11 +93,14 @@ class TranslationSettings(BaseSettings):
             const=1.0, metavar="ALPHA",
             help="normalize scores by sentence length (with argument, " \
                  "exponentiate lengths by ALPHA)")
-        
         self._parser.add_argument(
-            '-a', '--alignments', action="store_true",
+            '-a', '--alignments', default="json", choices=["json", "moses"],
             help="print attention scores")
-
+        
+        #self._parser.add_argument(
+            #'-a', '--alignments', action="store_true",
+            #help="print attention scores")
+ 
         # Support --n-best and --n_best (the dash version was added first, but
         # is inconsistent with the prevailing underscore style).
         group = self._parser.add_mutually_exclusive_group()
