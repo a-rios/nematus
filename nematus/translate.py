@@ -63,7 +63,7 @@ def main(settings):
                              minibatch_size=settings.minibatch_size,
                              maxibatch_size=settings.maxibatch_size,
                              normalization_alpha=settings.normalization_alpha,
-                             return_alignments=settings.alignments)
+                             print_alignments=settings.alignments)
 
 
 if __name__ == "__main__":

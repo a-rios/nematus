@@ -60,13 +60,44 @@ def beam_search(session, models, x, x_mask, beam_size,
         feed_dict[model.inputs.x_mask] = x_mask_repeat
     if graph is None:
         graph = BeamSearchGraph(models, beam_size, return_alignments=return_alignments)
-    ys, parents, costs, alignments = session.run(graph.outputs, feed_dict=feed_dict)
+    ys, parents, costs, alignments = session.run(graph.outputs, feed_dict=feed_dict) # alignments: (translation_len * len(models), input_len, beam_size * batch_size )
+    
+    ## reshape alignments
+    input_len = alignments.shape[1]
+    translation_len = alignments.shape[0]/len(models)
+    batch_size = alignments.shape[2]/beam_size
+    
+    reshaped_alignments = numpy.zeros(( batch_size , len(models), beam_size, translation_len, input_len))
+    
+    for target_token in range(translation_len):
+        for model in range(len(models)):
+            for source_token in range(input_len):
+                for hypothesis_index in range(beam_size):
+                    for batch_index in range(batch_size):
+                        reshaped_alignments[ batch_index, model, hypothesis_index, target_token, source_token] = alignments[target_token + model, source_token, hypothesis_index + batch_index]
+    
     beams = []
-    for beam in _reconstruct_hypotheses(ys, parents, costs, beam_size):
+    test = _reconstruct_hypotheses(ys, parents, costs, beam_size)
+    #print("reshaped {}".format(reshaped_alignments))
+
+    for i, beam in enumerate(_reconstruct_hypotheses(ys, parents, costs, beam_size)):
         if normalization_alpha > 0.0:
             beam = [normalize(sent, cost) for (sent, cost) in beam]
-        beams.append(sorted(beam, key=lambda sent_cost: sent_cost[1]))
-    return beams, alignments
+            
+        costs = [cost for (sent, cost) in beam]
+        sorted_index = numpy.argsort(costs) # beam_size
+        print("i: {} costs {}, sorted_index {}".format(i, costs, sorted_index))
+        sorted_beams = [beam[j] for j in sorted_index]
+        beams.append(sorted_beams)
+        #beams.append(sorted(beam, key=lambda (sent, cost): cost)) 
+        
+        #sort alignments
+        for model in range(len(models)):
+            #print("i {}, model {}".format(i,model))
+            #print("sorted parts {}".format(reshaped_alignments[i][model][sorted_index]))
+            reshaped_alignments[i][model] = reshaped_alignments[i][model][sorted_index] ## TODO something wrong here, ends up with multiples of the alignments of last sentence
+            
+    return beams, reshaped_alignments
 
 
 def _reconstruct_hypotheses(ys, parents, cost, beam_size):
@@ -102,6 +133,7 @@ def _reconstruct_hypotheses(ys, parents, cost, beam_size):
             hypo.append(0)
             hypotheses[batch].append((hypo, cost[i]))
     return hypotheses
+
 
 
 """Builds a graph fragment for sampling over a RNNModel."""
@@ -225,7 +257,7 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
     # parameters that are allowed to vary across models, the first model's
     # settings take precedence.
     decoder = models[0].decoder
-    batch_size = tf.shape(decoder.init_state)[0] # Tensor("strided_slice:0", shape=(), dtype=int32)
+    batch_size = tf.shape(decoder.init_state)[0]
     embedding_size = decoder.embedding_size
     translation_maxlen = decoder.translation_maxlen
     target_vocab_size = decoder.target_vocab_size
@@ -238,9 +270,10 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
     init_embs = [tf.zeros(dtype=tf.float32, shape=[batch_size,embedding_size])] * len(models)
 
     f_min = numpy.finfo(numpy.float32).min
-    init_cost = [0.] + [f_min]*(beam_size-1) # to force first top k are from first hypo only
+    init_cost = [0.] + [f_min]*(beam_size-1) # to force first top k are from first hypo only, (beam_size, )
     init_cost = tf.constant(init_cost, dtype=tf.float32)
     init_cost = tf.tile(init_cost, multiples=[batch_size//beam_size])
+
     ys_array = tf.TensorArray(
                 dtype=tf.int32,
                 size=translation_maxlen,
@@ -307,12 +340,12 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
         # set cost of EOS to zero for completed sentences so that they are in top k
         # Need to make sure only EOS is selected because a completed sentence might
         # kill ongoing sentences
-        sum_log_probs = tf.where(tf.equal(prev_ys, 0), eos_log_probs, sum_log_probs)
+        sum_log_probs = tf.where(tf.equal(prev_ys, 0), eos_log_probs, sum_log_probs) # sum_log_probs (batch, vocab_size), cost (batch_size, ), all_costs (batch_size, vocab_size)
 
-        all_costs = sum_log_probs + tf.expand_dims(cost, axis=1) # TODO: you might be getting NaNs here since -inf is in log_probs
+        all_costs = sum_log_probs + tf.expand_dims(cost, axis=1) # TODO: you might be getting NaNs here since -inf is in log_probs, all_costs(batch_size, vocab_size)
 
         all_costs = tf.reshape(all_costs,
-                               shape=[-1, target_vocab_size * beam_size])
+                               shape=[-1, target_vocab_size * beam_size]) # 
         values, indices = tf.nn.top_k(all_costs, k=beam_size) #the sorted option is by default True, is this needed?
         new_cost = tf.reshape(values, shape=[batch_size])
         offsets = tf.range(
@@ -347,6 +380,7 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
     sampled_ys = ys_array.gather(indices)
     parents = p_array.gather(indices)
     cost = tf.abs(cost) #to get negative-log-likelihood
-    alignments = alignment_array.gather(indices*len(models)) # (translation_maxlen * len(models), seqLen, batch_size)
+    alignment_range = tf.range(0, i*len(models))
+    alignments = alignment_array.gather(alignment_range) # (translation_maxlen * len(models), seqLen, beam_size*batch_size)
     return sampled_ys, parents, cost, alignments
 
