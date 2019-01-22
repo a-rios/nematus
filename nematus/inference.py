@@ -183,15 +183,19 @@ def translate_file(input_file, output_file, session, models, configs,
                      words = line.split()
                      model_idx=0 # TODO: how to do this with more than one model?
                      best_beam_idx=0
+                     score_sum=0
                      for target_word_idx, target_word in enumerate(words):
                          scores = OrderedDict()
                          for j, source_word in enumerate(source_words):
                             scores[source_word] = alignment[model_idx, best_beam_idx, target_word_idx, j]
                          #scores.append(alignment[model_idx, 0, target_word_idx])
                          sentence[target_word] = scores
-                     
+                         score_sum +=alignment[model_idx, best_beam_idx, target_word_idx, j]
+                     ##sentence['sum']=score_sum
                      sentences.append(sentence)
+                     
              json.dump(sentences, sys.stdout, indent=4, ensure_ascii=False) 
+             
                      
              
     _, _, _, num_to_target = util.load_dictionaries(configs[0])
