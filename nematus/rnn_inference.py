@@ -60,25 +60,23 @@ def beam_search(session, models, x, x_mask, beam_size,
         feed_dict[model.inputs.x_mask] = x_mask_repeat
     if graph is None:
         graph = BeamSearchGraph(models, beam_size, return_alignments=return_alignments)
-    ys, parents, costs, alignments = session.run(graph.outputs, feed_dict=feed_dict) # alignments: (translation_len * len(models), input_len, beam_size * batch_size )
+    ys, parents, costs, alignments = session.run(graph.outputs, feed_dict=feed_dict) # alignments: (translation_len , len(models), input_len, beam_size * batch_size )
     
     ## reshape alignments
-    input_len = alignments.shape[1]
-    translation_len = alignments.shape[0]/len(models)
-    batch_size = alignments.shape[2]/beam_size
+    input_len = alignments.shape[2]
+    translation_len = alignments.shape[0]
+    batch_size = alignments.shape[3]/beam_size
     
-    reshaped_alignments = numpy.zeros(( batch_size , len(models), beam_size, translation_len, input_len))
+    reshaped_alignments = numpy.zeros(( batch_size , len(models), beam_size, translation_len, input_len)) 
     
     for target_token in range(translation_len):
         for model in range(len(models)):
             for source_token in range(input_len):
                 for hypothesis_index in range(beam_size):
                     for batch_index in range(batch_size):
-                        reshaped_alignments[ batch_index, model, hypothesis_index, target_token, source_token] = alignments[target_token + model, source_token, hypothesis_index + batch_index]
+                        reshaped_alignments[ batch_index, model, hypothesis_index, target_token, source_token] = alignments[target_token , model, source_token, hypothesis_index * batch_index + hypothesis_index]
     
     beams = []
-    test = _reconstruct_hypotheses(ys, parents, costs, beam_size)
-    #print("reshaped {}".format(reshaped_alignments))
 
     for i, beam in enumerate(_reconstruct_hypotheses(ys, parents, costs, beam_size)):
         if normalization_alpha > 0.0:
@@ -86,17 +84,14 @@ def beam_search(session, models, x, x_mask, beam_size,
             
         costs = [cost for (sent, cost) in beam]
         sorted_index = numpy.argsort(costs) # beam_size
-        print("i: {} costs {}, sorted_index {}".format(i, costs, sorted_index))
         sorted_beams = [beam[j] for j in sorted_index]
         beams.append(sorted_beams)
         #beams.append(sorted(beam, key=lambda (sent, cost): cost)) 
         
         #sort alignments
         for model in range(len(models)):
-            #print("i {}, model {}".format(i,model))
-            #print("sorted parts {}".format(reshaped_alignments[i][model][sorted_index]))
-            reshaped_alignments[i][model] = reshaped_alignments[i][model][sorted_index] ## TODO something wrong here, ends up with multiples of the alignments of last sentence
-            
+            reshaped_alignments[i][model] = reshaped_alignments[i][model][sorted_index] 
+                   
     return beams, reshaped_alignments
 
 
@@ -311,13 +306,13 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
         sum_log_probs = None
         base_states = [None] * len(models)
         high_states = [None] * len(models)
+        step_scores = [None] * len(models)
         
         for j in range(len(models)):
             d = models[j].decoder
             states1 = d.grustep1.forward(prev_base_states[j], prev_embs[j])
             att_ctx = d.attstep.forward(states1)
-            scores = d.attstep.alignments ## seqLen x batch
-            alignment_array = alignment_array.write(i+j, value=scores) 
+            step_scores[j] = d.attstep.alignments  # (len(models), seqLen, batch*beamsize)
             base_states[j] = d.grustep2.forward(states1, att_ctx)
             if d.high_gru_stack == None:
                 stack_output = base_states[j]
@@ -337,6 +332,10 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
             else:
                 sum_log_probs += log_probs
 
+
+        raw_scores = tf.stack(step_scores, name="raw_scores")
+        alignment_array = alignment_array.write(i, value=raw_scores) 
+        
         # set cost of EOS to zero for completed sentences so that they are in top k
         # Need to make sure only EOS is selected because a completed sentence might
         # kill ongoing sentences
@@ -380,7 +379,6 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
     sampled_ys = ys_array.gather(indices)
     parents = p_array.gather(indices)
     cost = tf.abs(cost) #to get negative-log-likelihood
-    alignment_range = tf.range(0, i*len(models))
-    alignments = alignment_array.gather(alignment_range) # (translation_maxlen * len(models), seqLen, beam_size*batch_size)
+    alignments = alignment_array.gather(indices) # (translation_maxlen , len(models), seqLen, beam_size*batch_size)
     return sampled_ys, parents, cost, alignments
 
