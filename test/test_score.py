@@ -6,8 +6,8 @@ import unittest
 import logging
 
 sys.path.append(os.path.abspath('../nematus'))
-from score import main as score
-from settings import ScorerSettings
+from nematus.score import main as score
+from nematus.settings import ScorerSettings
 from test_utils import load_wmt16_model
 
 level = logging.DEBUG

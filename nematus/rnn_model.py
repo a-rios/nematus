@@ -214,7 +214,8 @@ class Decoder(object):
                         prev_state,
                         gates_x=gates_x2d,
                         proposal_x=proposal_x2d)
-            att_ctx = self.attstep.forward(state) 
+            # ignore during training: alignment_scores
+            att_ctx, _ = self.attstep.forward(state)
             state = self.grustep2.forward(state, att_ctx)
             #TODO: write att_ctx to tensorArray instead of having it as output of scan?
             return (state, att_ctx)

@@ -33,6 +33,18 @@ class LegacyBiasType:
 
 
 def matmul3d(x3d, matrix):
+    """
+    Matrix multiply for batched inputs.
+
+    Along the first axis of a 3D tensor 'x3d', multiply each
+    of its 2D components with a 2D matrix 'matrix'.
+
+    tf.shape(x3d)[2] must be equal to tf.shape(matrix)[0]
+
+    :param x3d: A 3D tensor.
+    :param matrix: A 2D tensor.
+    :return: A 3D tensor of shape (tf.shape(x3d)[0], tf.shape(x3d)[1], tf.shape(matrix)[1]).
+    """
     shape = tf.shape(x3d)
     mat_shape = tf.shape(matrix)
     x2d = tf.reshape(x3d, [shape[0]*shape[1], shape[2]])
@@ -497,15 +509,22 @@ class AttentionStep(object):
                  dropout_context=None,
                  dropout_state=None):
         init = initializers.norm_weight(state_size, hidden_size)
+
+        # shape (decoder_state_size, hidden_size)
         self.state_to_hidden = tf.get_variable('state_to_hidden',
                                                initializer=init)
         #TODO: Nematus uses ortho_weight here - important?
         init = initializers.norm_weight(context_state_size, hidden_size)
+
+        # shape (encoder_state_size, hidden_size)
         self.context_to_hidden = tf.get_variable('context_to_hidden',
                                                  initializer=init)
         self.hidden_bias = tf.get_variable('hidden_bias', [hidden_size],
                                            initializer=tf.zeros_initializer)
+
         init = initializers.norm_weight(hidden_size, 1)
+
+        # shape (hidden_size, 1)
         self.hidden_to_score = tf.get_variable('hidden_to_score',
                                                initializer=init)
         self.use_layer_norm = use_layer_norm
@@ -514,7 +533,11 @@ class AttentionStep(object):
                 self.hidden_context_norm = LayerNormLayer(layer_size=hidden_size)
             with tf.variable_scope('hidden_state_norm'):
                 self.hidden_state_norm = LayerNormLayer(layer_size=hidden_size)
+
+        # shape (source_seq_len, batch, encoder_state_hidden_size)
         self.context = context
+
+        # shape (source_seq_len, batch)
         self.context_mask = context_mask
 
         batch_size = tf.shape(context)[1]
@@ -537,25 +560,41 @@ class AttentionStep(object):
         # Ideally the compiler would have figured out that too
         context = apply_dropout_mask(context,
                                      self.dropout_mask_context_to_hidden, True)
+
+        # shape (source_seq_len, batch, hidden_size)
         self.hidden_from_context = matmul3d(context, self.context_to_hidden)
+
         self.hidden_from_context += self.hidden_bias
         if self.use_layer_norm:
             self.hidden_from_context = \
                 self.hidden_context_norm.forward(self.hidden_from_context)
 
     def forward(self, prev_state):
+        """
+        Computes a weighted sum of current context (all encoder states, plus previous
+        decoder state).
+
+        :param prev_state: Previous decoder state. Shape (batch, decoder_state_size)
+        :return: Weighted sum of states of shape (batch, encoder_state_hidden_size)
+        """
+        # shape (batch, decoder_state_size)
         prev_state = apply_dropout_mask(prev_state,
                                         self.dropout_mask_state_to_hidden)
+
+        # shape (batch, hidden_size)
         hidden_from_state = tf.matmul(prev_state, self.state_to_hidden)
         if self.use_layer_norm:
             hidden_from_state = \
                 self.hidden_state_norm.forward(hidden_from_state)
+
+        # shape (source_seq_len, batch, hidden_size)
         hidden = self.hidden_from_context + hidden_from_state
         hidden = tf.nn.tanh(hidden)
-        # context has shape seqLen x batch x context_state_size
-        # mask has shape seqLen x batch
 
-        scores = matmul3d(hidden, self.hidden_to_score) # seqLen x batch x 1
+        # shape (source_seq_len, batch, 1)
+        scores = matmul3d(hidden, self.hidden_to_score)
+
+        # shape (source_seq_len, batch)
         scores = tf.squeeze(scores, axis=2)
         scores = scores - tf.reduce_max(scores, axis=0, keepdims=True)
         scores = tf.exp(scores)
@@ -563,10 +602,13 @@ class AttentionStep(object):
         scores = scores / tf.reduce_sum(scores, axis=0, keepdims=True)
         self.alignments = scores 
 
+        # shape (source_seq_len, batch, encoder_state_hidden_size)
         attention_context = self.context * tf.expand_dims(scores, axis=2)
+
+        # shape (batch, encoder_state_hidden_size)
         attention_context = tf.reduce_sum(attention_context, axis=0, keepdims=False)
 
-        return attention_context
+        return attention_context, scores
 
 class Masked_cross_entropy_loss(object):
     def __init__(self,
