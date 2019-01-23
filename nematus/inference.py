@@ -135,7 +135,7 @@ def translate_file(input_file, output_file, session, models, configs,
             y_dummy = numpy.zeros(shape=(len(x),1))
             x, x_mask, _, _ = util.prepare_data(x, y_dummy, configs[0].factors,
                                                 maxlen=None)
-            sample = model_set.beam_search(
+            sample, alignments = model_set.beam_search(
                 session=session,
                 x=x,
                 x_mask=x_mask,
