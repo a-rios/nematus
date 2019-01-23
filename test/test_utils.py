@@ -6,7 +6,7 @@ import requests
 from shutil import copyfile
 
 sys.path.append(os.path.abspath('../nematus'))
-from theano_tf_convert import theano_to_tensorflow_model
+from nematus.theano_tf_convert import theano_to_tensorflow_model
 
 def load_wmt16_model(src, target):
         path = os.path.join('models', '{0}-{1}'.format(src,target))
