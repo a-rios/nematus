@@ -55,7 +55,10 @@ def beam_search(session, models, x, x_mask, beam_size,
     def normalize(sent, cost):
         return (sent, cost / (len(sent) ** normalization_alpha))
 
+    # shape (factors, src_seq_len, beam * batch)
     x_repeat = numpy.repeat(x, repeats=beam_size, axis=-1)
+
+    # shape (src_seq_len, beam * batch)
     x_mask_repeat = numpy.repeat(x_mask, repeats=beam_size, axis=-1)
     feed_dict = {}
     for model in models:
@@ -63,13 +66,55 @@ def beam_search(session, models, x, x_mask, beam_size,
         feed_dict[model.inputs.x_mask] = x_mask_repeat
     if graph is None:
         graph = BeamSearchGraph(models, beam_size)
-    ys, parents, costs = session.run(graph.outputs, feed_dict=feed_dict)
+
+    # shape of alignments: (target_seq_len, num_models, beam * batch, source_seq_len)
+    ys, parents, costs, alignments = session.run(graph.outputs, feed_dict=feed_dict)
+
+    # shape (batch, num_models, beam, target_seq_len, source_seq_len)
+    alignments = reshape_alignments(alignments, beam_size)
+
+    num_models = len(models)
+
     beams = []
-    for beam in _reconstruct_hypotheses(ys, parents, costs, beam_size):
+
+    for batch_index, beam in enumerate(_reconstruct_hypotheses(ys, parents, costs, beam_size)):
         if normalization_alpha > 0.0:
             beam = [normalize(sent, cost) for (sent, cost) in beam]
-        beams.append(sorted(beam, key=lambda sent_cost: sent_cost[1]))
-    return beams
+
+        costs = [cost for (sent, cost) in beam]
+        sort_index = numpy.argsort(costs)
+
+        beam = numpy.array(beam, dtype=numpy.object)
+        beam = beam[sort_index]
+        beams.append(beam)
+
+        for model_index in range(num_models):
+            alignments[batch_index][model_index] = alignments[batch_index][model_index][sort_index]
+
+    # shape of beams: (batch, beam), individual items are (translation, score)
+    return beams, alignments
+
+
+def reshape_alignments(alignments, beam_size):
+    """
+    Reshape alignment array.
+
+    :param alignments: shape (target_seq_len, num_models, beam * batch, source_seq_len)
+    :return:
+    """
+    batch_size = int(alignments.shape[2] / beam_size)
+
+    shape = alignments.shape
+
+    # shape (target_seq_len, num_models, beam, batch, source_seq_len)
+    alignments = alignments.reshape(shape[0], shape[1], beam_size, batch_size, shape[3])
+
+    axes = (3, 1, 2, 0, 4)
+
+    # shape (batch, num_models, beam, target_seq_len, source_seq_len)
+    alignments = numpy.transpose(alignments, axes=axes)
+
+    return alignments
 
 
 def _reconstruct_hypotheses(ys, parents, cost, beam_size):
@@ -124,16 +169,20 @@ class BeamSearchGraph(object):
     def __init__(self, models, beam_size, normalization_alpha):
         self._beam_size = beam_size
         self._normalization_alpha = normalization_alpha
-        self._sampled_ys, self._parents, self._cost = \
+        self._sampled_ys, self._parents, self._cost, self._alignments = \
             construct_beam_search_ops(models, beam_size)
 
     @property
     def outputs(self):
-        return (self._sampled_ys, self._parents, self._cost)
+        return (self._sampled_ys, self._parents, self._cost, self._alignments)
 
     @property
     def beam_size(self):
         return self._beam_size
+
+    @property
+    def alignments(self):
+        return self._alignments
 
     @property
     def normalization_alpha(self):
@@ -174,7 +223,7 @@ def construct_sampling_ops(model):
     def body(i, prev_base_state, prev_high_states, prev_y, prev_emb,
              y_array):
         state1 = decoder.grustep1.forward(prev_base_state, prev_emb)
-        att_ctx = decoder.attstep.forward(state1)
+        att_ctx, alignment_scores = decoder.attstep.forward(state1)
         base_state = decoder.grustep2.forward(state1, att_ctx)
         if decoder.high_gru_stack == None:
             output = base_state
@@ -253,10 +302,15 @@ def construct_beam_search_ops(models, beam_size):
                 size=translation_maxlen,
                 clear_after_read=True,
                 name='parent_idx_array')
+    alignments_array = tf.TensorArray(
+                dtype=tf.float32,
+                size=translation_maxlen,
+                clear_after_read=True,
+                name='alignments_array')
     init_base_states = [m.decoder.init_state for m in models]
     init_high_states = [[m.decoder.init_state] * high_depth for m in models]
     init_loop_vars = [i, init_base_states, init_high_states, init_ys, init_embs,
-                      init_cost, ys_array, p_array]
+                      init_cost, ys_array, p_array, alignments_array]
 
     # Prepare cost matrix for completed sentences -> Prob(EOS) = 1 and Prob(x) = 0
     eos_log_probs = tf.constant(
@@ -264,20 +318,31 @@ def construct_beam_search_ops(models, beam_size):
                         dtype=tf.float32)
     eos_log_probs = tf.tile(eos_log_probs, multiples=[batch_size,1])
 
-    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array):
+    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array, alignments_array):
         return tf.logical_and(
                 tf.less(i, translation_maxlen),
                 tf.reduce_any(tf.not_equal(prev_ys, 0)))
 
-    def body(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array):
+    def body(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array,  alignments_array):
         # get predictions from all models and sum the log probs
         sum_log_probs = None
         base_states = [None] * len(models)
         high_states = [None] * len(models)
+        alignments = [None] * len(models)
+
         for j in range(len(models)):
             d = models[j].decoder
+
+            # shape (batch_, decoder_state_size)
             states1 = d.grustep1.forward(prev_base_states[j], prev_embs[j])
-            att_ctx = d.attstep.forward(states1)
+
+            # shapes (batch, encoder_state_size), (source_seq_len, batch)
+            att_ctx, alignment_scores = d.attstep.forward(states1)
+
+            # shape (batch, source_seq_len)
+            alignment_scores = tf.transpose(alignment_scores)
+            alignments[j] = alignment_scores
+
             base_states[j] = d.grustep2.forward(states1, att_ctx)
             if d.high_gru_stack == None:
                 stack_output = base_states[j]
@@ -291,7 +356,9 @@ def construct_beam_search_ops(models, beam_size):
                         prev_high_states[j], base_states[j], context=att_ctx)
             logits = d.predictor.get_logits(prev_embs[j], stack_output,
                                             att_ctx, multi_step=False)
-            log_probs = tf.nn.log_softmax(logits) # shape (batch, vocab_size)
+
+            # shape (batch, vocab_size)
+            log_probs = tf.nn.log_softmax(logits)
             if sum_log_probs == None:
                 sum_log_probs = log_probs
             else:
@@ -326,7 +393,11 @@ def construct_beam_search_ops(models, beam_size):
         ys_array = ys_array.write(i, value=new_ys)
         p_array = p_array.write(i, value=survivor_idxs)
 
-        return i+1, new_base_states, new_high_states, new_ys, new_embs, new_cost, ys_array, p_array
+        # shape (num_models, batch, source_seq_len)
+        alignments_stacked = tf.stack(alignments)
+        alignments_array = alignments_array.write(i, value=alignments_stacked)
+
+        return i+1, new_base_states, new_high_states, new_ys, new_embs, new_cost, ys_array, p_array,  alignments_array
 
 
     final_loop_vars = tf.while_loop(
@@ -334,10 +405,14 @@ def construct_beam_search_ops(models, beam_size):
                         body=body,
                         loop_vars=init_loop_vars,
                         back_prop=False)
-    i, _, _, _, _, cost, ys_array, p_array = final_loop_vars
+    i, _, _, _, _, cost, ys_array, p_array, alignments_array = final_loop_vars
 
     indices = tf.range(0, i)
     sampled_ys = ys_array.gather(indices)
     parents = p_array.gather(indices)
+
+    # shape (target_seq_len, num_models, batch, source_seq_len)
+    alignments = alignments_array.gather(indices)
+
     cost = tf.abs(cost) #to get negative-log-likelihood
-    return sampled_ys, parents, cost
+    return sampled_ys, parents, cost, alignments
