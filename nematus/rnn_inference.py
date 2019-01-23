@@ -28,7 +28,7 @@ def sample(session, model, x, x_mask, graph=None):
 
 
 def beam_search(session, models, x, x_mask, beam_size,
-                normalization_alpha=0.0, graph=None, return_alignments=False):
+                normalization_alpha=0.0, graph=None):
     """Beam search using one or more RNNModels..
     If using an ensemble (i.e. more than one model), then at each timestep
     the top k tokens are selected according to the sum of the models' log
@@ -59,13 +59,13 @@ def beam_search(session, models, x, x_mask, beam_size,
         feed_dict[model.inputs.x] = x_repeat
         feed_dict[model.inputs.x_mask] = x_mask_repeat
     if graph is None:
-        graph = BeamSearchGraph(models, beam_size, return_alignments=return_alignments)
+        graph = BeamSearchGraph(models, beam_size)
     ys, parents, costs, alignments = session.run(graph.outputs, feed_dict=feed_dict) # alignments: (translation_len , len(models), input_len, beam_size * batch_size )
     
     ## reshape alignments
     input_len = alignments.shape[2]
     translation_len = alignments.shape[0]
-    batch_size = alignments.shape[3]/beam_size
+    batch_size = int(alignments.shape[3]/beam_size)
     
     reshaped_alignments = numpy.zeros(( batch_size , len(models), beam_size, translation_len, input_len)) 
     
@@ -148,8 +148,8 @@ class BeamSearchGraph(object):
     def __init__(self, models, beam_size, normalization_alpha):
         self._beam_size = beam_size
         self._normalization_alpha = normalization_alpha
-        self._sampled_ys, self._parents, self._cost = \
-            construct_beam_search_ops(models, beam_size, return_alignments=return_alignments)
+        self._sampled_ys, self._parents, self._cost, self._alignments = \
+            construct_beam_search_ops(models, beam_size)
 
     @property
     def outputs(self):
@@ -233,7 +233,7 @@ def construct_sampling_ops(model):
     return sampled_ys
 
 
-def construct_beam_search_ops(models, beam_size, return_alignments=False):
+def construct_beam_search_ops(models, beam_size):
     """Builds a graph fragment for beam search over one or more RNNModels.
     Strategy:
         compute the log_probs - same as with sampling
@@ -296,7 +296,7 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
                         dtype=tf.float32)
     eos_log_probs = tf.tile(eos_log_probs, multiples=[batch_size,1])
 
-    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array, alignment_array):
+    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_arconstruct_beam_search_opsray, alignment_array):
         return tf.logical_and(
                 tf.less(i, translation_maxlen),
                 tf.reduce_any(tf.not_equal(prev_ys, 0)))

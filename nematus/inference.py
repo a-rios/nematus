@@ -46,7 +46,7 @@ class InferenceModelSet(object):
         self._cached_sample_graph = None
         self._cached_beam_search_graph = None
 
-    def sample(self, session, x, x_mask, return_alignments=False):
+    def sample(self, session, x, x_mask):
         # Sampling is not implemented for ensembles, so just use the first
         # model.
         model = self._models[0]
@@ -56,7 +56,7 @@ class InferenceModelSet(object):
                                  self._cached_sample_graph)
 
     def beam_search(self, session, x, x_mask, beam_size,
-                    normalization_alpha=0.0, return_alignments=False):
+                    normalization_alpha=0.0):
         """Beam search using all models contained in this model set.
 
         If using an ensemble (i.e. more than one model), then at each timestep
@@ -90,7 +90,7 @@ class InferenceModelSet(object):
                                              normalization_alpha)
         return self._beam_search_func(session, self._models, x, x_mask,
                                       beam_size, normalization_alpha,
-                                      self._cached_beam_search_graph, return_alignments=return_alignments)
+                                      self._cached_beam_search_graph)
 
 
 def translate_file(input_file, output_file, session, models, configs,
@@ -144,8 +144,7 @@ def translate_file(input_file, output_file, session, models, configs,
                 x=x,
                 x_mask=x_mask,
                 beam_size=beam_size,
-                normalization_alpha=normalization_alpha, 
-                return_alignments=return_alignments)
+                normalization_alpha=normalization_alpha)
             
             beams.extend(sample)
             alignments.extend(scores) # scores (batch_size, num_models, beam_size, translation_maxlen, input_len)
@@ -202,7 +201,7 @@ def translate_file(input_file, output_file, session, models, configs,
                      for target_word_idx, target_word in enumerate(words):
                          scores = OrderedDict()
                          for j, source_word in enumerate(source_words):
-                            scores["s:" + source_word] = alignment[model_idx, best_beam_idx, target_word_idx, j]
+                            scores[source_word] = alignment[model_idx, best_beam_idx, target_word_idx, j]
                          alignment_list[target_word]=scores
                          sentence['alignments'] = alignment_list
                          #score_sum +=alignment[model_idx, best_beam_idx, target_word_idx, j]
