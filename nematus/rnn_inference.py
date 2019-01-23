@@ -368,8 +368,6 @@ def construct_beam_search_ops(models, beam_size, return_alignments=False):
                 sum_log_probs += log_probs
 
 
-        raw_scores = tf.stack(step_scores, name="raw_scores")
-        alignment_array = alignment_array.write(i, value=raw_scores) 
         
         # set cost of EOS to zero for completed sentences so that they are in top k
         # Need to make sure only EOS is selected because a completed sentence might
