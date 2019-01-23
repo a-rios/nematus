@@ -95,7 +95,7 @@ class InferenceModelSet(object):
 
 def translate_file(input_file, output_file, session, models, configs,
                    beam_size=12, nbest=False, minibatch_size=80,
-                   maxibatch_size=20, normalization_alpha=1.0, print_alignments=None):
+                   maxibatch_size=20, normalization_alpha=1.0, print_alignments=None, alignment_file=sys.stdout):
     """Translates a source file using a translation model (or ensemble).
 
     Args:
@@ -134,7 +134,7 @@ def translate_file(input_file, output_file, session, models, configs,
         # translations and scores) for each sentence.
         beams = []
         alignments = []
-        return_alignments = not alignments==None
+        return_alignments = not print_alignments==None
         for x in minibatches:
             y_dummy = numpy.zeros(shape=(len(x),1))
             x, x_mask, _, _ = util.prepare_data(x, y_dummy, configs[0].factors,
@@ -146,11 +146,10 @@ def translate_file(input_file, output_file, session, models, configs,
                 beam_size=beam_size,
                 normalization_alpha=normalization_alpha, 
                 return_alignments=return_alignments)
-            #print("scores {}".format(scores))
+            
             beams.extend(sample)
             alignments.extend(scores) # scores (batch_size, num_models, beam_size, translation_maxlen, input_len)
-            print("alignment shape {}".format(len(alignments)))
-            #print("extended alignments {}".format(alignments))
+
             num_translated = num_prev_translated + len(beams)
             logging.info('Translated {} sents'.format(num_translated))
 
@@ -174,53 +173,56 @@ def translate_file(input_file, output_file, session, models, configs,
                 line = util.seq2words(best_hypo, num_to_target) + '\n'
                 output_file.write(line)
 
-        if return_alignments: # TODO: print to stdout? or to separate output file?
+        if return_alignments: 
              sentences =[]
              for i, (alignment, beam) in enumerate(zip(ordered_alignments, ordered_beams)):  # alignment = alignments for one sentence, shape (num_models, beam_size, translation_maxlen, input_len)
                  num_models = alignment.shape[0]
                  translation_maxlen = alignment.shape[2]
                  input_len = alignment.shape[3]
-                 input_sentence = maxibatch[i]
+                 input_sentence = maxibatch[i].rstrip()
                  source_words = input_sentence.split()
                  source_words.append('<eos>')
                  
                  if nbest:
                      raise NotImplementedError # TODO: print alignments with nbest option
-                     #if print_alignments == "json":  # alignment shape: ( len(models), beam_size, translation_len, input_len )
-                        #for model_idx in range(len(alignment.shape[0])):
-                            #for beam_idx in range(len(nbest)):
-                                #hypo = beam[beam_idx]
-                                #translation = util.seq2words(hypo, num_to_target) + '\n'
-                                #words = translation.split()
-                                #for target_word_idx in range(len(alignment.shape[2])):
-                                    #word = words[target_word_idx]
-                                    #for input_word_idx in range(len(alignment.shape[3])):
-                                        #alignment_score = alignment[model_idx, beam_idx, target_word_idx, input_word_idx]
                  else:
                      best_hypo, cost = beam[0]
-                     line = util.seq2words(best_hypo, num_to_target) + '\n'
+                     line = util.seq2words(best_hypo, num_to_target)
                      sentence = OrderedDict ([
                         ('translation' , line),
                         ('source', input_sentence),
                         ('cost' , cost)
                         ])
                      words = line.split()
+                     words.append('<eos>')
                      model_idx=0 # TODO: how to do this with more than one model?
                      best_beam_idx=0
                      score_sum=0
+                     alignment_list = OrderedDict()
                      for target_word_idx, target_word in enumerate(words):
                          scores = OrderedDict()
                          for j, source_word in enumerate(source_words):
-                            scores[source_word] = alignment[model_idx, best_beam_idx, target_word_idx, j]
-                         #scores.append(alignment[model_idx, 0, target_word_idx])
-                         sentence[target_word] = scores
-                         score_sum +=alignment[model_idx, best_beam_idx, target_word_idx, j]
+                            scores["s:" + source_word] = alignment[model_idx, best_beam_idx, target_word_idx, j]
+                         alignment_list[target_word]=scores
+                         sentence['alignments'] = alignment_list
+                         #score_sum +=alignment[model_idx, best_beam_idx, target_word_idx, j]
                      ##sentence['sum']=score_sum
                      sentences.append(sentence)
-                     
-             json.dump(sentences, sys.stdout, indent=4, ensure_ascii=False) 
              
-                     
+             if print_alignments == 'json':
+                json.dump(sentences, alignment_file, indent=4, ensure_ascii=False) 
+                
+             elif print_alignments == 'soft' :
+                 for i in range(len(sentences)):
+                    alignment_file.write("{} ||| {} ||| {} ||| {} ||| {} {}".format(i, sentences[i]['translation'], sentences[i]['cost'], sentences[i]['source'], len(sentences[i]['source'].split())+1, len(sentences[i]['translation'].split())+1))
+                    alignment_file.write("\n")
+                    for trg_word in sentences[i]['alignments']:
+                        # print score for each source word
+                        scores = ""
+                        for src_word in sentences[i]['alignments'][trg_word]:
+                            alignment_file.write(str(sentences[i]['alignments'][trg_word][src_word]) + " ")
+                        alignment_file.write("\n")    
+                    alignment_file.write("\n")
              
     _, _, _, num_to_target = util.load_dictionaries(configs[0])
     model_set = InferenceModelSet(models, configs)

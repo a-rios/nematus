@@ -93,8 +93,11 @@ class TranslationSettings(BaseSettings):
             help="normalize scores by sentence length (with argument, " \
                  "exponentiate lengths by ALPHA)")
         self._parser.add_argument(
-            '-a', '--alignments', default="json", choices=["json", "moses"],
+            '-a', '--alignments', default="json", choices=["json", "soft"],
             help="print attention scores")
+        self._parser.add_argument(
+             '--alignment-file', default=sys.stdout, type=argparse.FileType('w'),
+            help="output file for attention scores")
         
         #self._parser.add_argument(
             #'-a', '--alignments', action="store_true",
