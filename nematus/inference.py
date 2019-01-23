@@ -46,7 +46,7 @@ class InferenceModelSet(object):
         self._cached_sample_graph = None
         self._cached_beam_search_graph = None
 
-    def sample(self, session, x, x_mask):
+    def sample(self, session, x, x_mask, return_alignments=False):
         # Sampling is not implemented for ensembles, so just use the first
         # model.
         model = self._models[0]
@@ -56,7 +56,7 @@ class InferenceModelSet(object):
                                  self._cached_sample_graph)
 
     def beam_search(self, session, x, x_mask, beam_size,
-                    normalization_alpha=0.0):
+                    normalization_alpha=0.0, return_alignments=False):
         """Beam search using all models contained in this model set.
 
         If using an ensemble (i.e. more than one model), then at each timestep
@@ -145,6 +145,7 @@ def translate_file(input_file, output_file, session, models, configs,
                 x_mask=x_mask,
                 beam_size=beam_size,
                 normalization_alpha=normalization_alpha)
+
             
             beams.extend(sample)
             alignments.extend(scores) # scores (batch_size, num_models, beam_size, translation_maxlen, input_len)

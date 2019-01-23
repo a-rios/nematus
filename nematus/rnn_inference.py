@@ -28,7 +28,7 @@ def sample(session, model, x, x_mask, graph=None):
 
 
 def beam_search(session, models, x, x_mask, beam_size,
-                normalization_alpha=0.0, graph=None):
+                normalization_alpha=0.0, graph=None, return_alignments=False):
     """Beam search using one or more RNNModels..
     If using an ensemble (i.e. more than one model), then at each timestep
     the top k tokens are selected according to the sum of the models' log
@@ -233,7 +233,7 @@ def construct_sampling_ops(model):
     return sampled_ys
 
 
-def construct_beam_search_ops(models, beam_size):
+def construct_beam_search_ops(models, beam_size, return_alignments=False):
     """Builds a graph fragment for beam search over one or more RNNModels.
     Strategy:
         compute the log_probs - same as with sampling
@@ -267,6 +267,7 @@ def construct_beam_search_ops(models, beam_size):
     f_min = numpy.finfo(numpy.float32).min
     init_cost = [0.] + [f_min]*(beam_size-1) # to force first top k are from first hypo only, (beam_size, )
     init_cost = tf.constant(init_cost, dtype=tf.float32)
+
     init_cost = tf.tile(init_cost, multiples=[batch_size//beam_size])
 
     ys_array = tf.TensorArray(
@@ -296,7 +297,8 @@ def construct_beam_search_ops(models, beam_size):
                         dtype=tf.float32)
     eos_log_probs = tf.tile(eos_log_probs, multiples=[batch_size,1])
 
-    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_arconstruct_beam_search_opsray, alignment_array):
+
+    def cond(i, prev_base_states, prev_high_states, prev_ys, prev_embs, cost, ys_array, p_array, alignment_array):
         return tf.logical_and(
                 tf.less(i, translation_maxlen),
                 tf.reduce_any(tf.not_equal(prev_ys, 0)))
