@@ -9,7 +9,8 @@ import exception
 import rnn_inference
 import transformer_inference
 import util
-import output_handler
+
+from output_handler import OutputHandler
 
 
 """Represents a collection of models that can be used jointly for inference.
@@ -133,35 +134,41 @@ def translate_file(input_file, output_file, session, models, configs,
         # Translate the minibatches and store the resulting beam (i.e.
         # translations and scores) for each sentence.
         beams = []
+        alignments_per_batch = []
         for x in minibatches:
             y_dummy = numpy.zeros(shape=(len(x),1))
             x, x_mask, _, _ = util.prepare_data(x, y_dummy, configs[0].factors,
                                                 maxlen=None)
-            sample, alignments = model_set.beam_search(  # alignments shape (batch, num_models, beam, target_seq_len, source_seq_len)
+            sample, alignments = model_set.beam_search(
                 session=session,
                 x=x,
                 x_mask=x_mask,
                 beam_size=beam_size,
                 normalization_alpha=normalization_alpha)
             beams.extend(sample)
+            alignments_per_batch.extend(alignments)
+
             num_translated = num_prev_translated + len(beams)
             logging.info('Translated {} sents'.format(num_translated))
 
-        # Put beams into the same order as the input maxibatch.
+        # Put beams and alignments into the same order as the input maxibatch
         tmp = numpy.array(beams, dtype=numpy.object)
-        ordered_beams = tmp[idxs.argsort()]
-        ordered_alignments = alignments[idxs.argsort()]
-        print("ordered alignments shape {}".format(ordered_alignments.shape))
-        printer = output_handler.OutputHandler(beams=ordered_beams, 
-                                               alignments=ordered_alignments, 
-                                               outfile=output_file, 
-                                               output_format=output_format,
-                                               maxibatch=maxibatch,
-                                               vocab=num_to_target,
-                                               num_prev_translated=num_prev_translated)
-        printer.write() 
+        sort_index = idxs.argsort()
+        ordered_beams = tmp[sort_index]
+
+        ordered_alignments = [alignments_per_batch[i] for i in sort_index]
+
+        output_handler.write(beams=ordered_beams,
+                             alignments=ordered_alignments,
+                             maxibatch=maxibatch,
+                             num_prev_translated=num_prev_translated)
 
     _, _, _, num_to_target = util.load_dictionaries(configs[0])
+
+    output_handler = OutputHandler(output_file=output_file,
+                                   output_format=output_format,
+                                   vocab=num_to_target)
+
     model_set = InferenceModelSet(models, configs)
 
     logging.info("NOTE: Length of translations is capped to {}".format(

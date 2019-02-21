@@ -91,8 +91,8 @@ def beam_search(session, models, x, x_mask, beam_size,
         for model_index in range(num_models):
             alignments[batch_index][model_index] = alignments[batch_index][model_index][sort_index]
 
-    # shape of beams: (batch, beam), individual items are (translation, score)
-    return beams, alignments
+    # shape of beams: (batch, beam), individual beam items are (translation, score)
+    return beams, [alignments[i] for i in range(alignments.shape[0])]
 
 
 def reshape_alignments(alignments, beam_size):
