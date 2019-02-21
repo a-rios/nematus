@@ -107,9 +107,9 @@ def reshape_alignments(alignments, beam_size):
     shape = alignments.shape
 
     # shape (target_seq_len, num_models, beam, batch, source_seq_len)
-    alignments = alignments.reshape(shape[0], shape[1], beam_size, batch_size, shape[3])
+    alignments = alignments.reshape(shape[0], shape[1], batch_size, beam_size, shape[3])
 
-    axes = (3, 1, 2, 0, 4)
+    axes = (2, 1, 3, 0, 4)
 
     # shape (batch, num_models, beam, target_seq_len, source_seq_len)
     alignments = numpy.transpose(alignments, axes=axes)
