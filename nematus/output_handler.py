@@ -139,7 +139,7 @@ class OutputHandler(object):
             # one line per target word
             for trg_idx in range(len(translation.split())+1):
                 # print score for each source word
-                for src_idx in range(len(input_sentence.split())+1):
-                    self.output_file.write(str(alignment[model_idx, beam_idx, trg_idx, src_idx]) + " ")
+                source_alignments = [str(alignment[model_idx, beam_idx, trg_idx, src_idx]) for src_idx in range(len(input_sentence.split())+1)]
+                self.output_file.write(" ".join(source_alignments))
                 self.output_file.write("\n")
             self.output_file.write("\n")
