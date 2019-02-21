@@ -92,6 +92,10 @@ class TranslationSettings(BaseSettings):
             const=1.0, metavar="ALPHA",
             help="normalize scores by sentence length (with argument, " \
                  "exponentiate lengths by ALPHA)")
+        self._parser.add_argument(
+            '-f', '--output-format', default="translation", choices=["translation", "nbest", "json", "soft"],
+            help="output format: translations only (default) or translations with alignments, either as json or lists of scores")
+
 
         # Support --n-best and --n_best (the dash version was added first, but
         # is inconsistent with the prevailing underscore style).

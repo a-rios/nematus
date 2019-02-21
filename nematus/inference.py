@@ -9,6 +9,7 @@ import exception
 import rnn_inference
 import transformer_inference
 import util
+import output_handler
 
 
 """Represents a collection of models that can be used jointly for inference.
@@ -93,7 +94,7 @@ class InferenceModelSet(object):
 
 def translate_file(input_file, output_file, session, models, configs,
                    beam_size=12, nbest=False, minibatch_size=80,
-                   maxibatch_size=20, normalization_alpha=1.0):
+                   maxibatch_size=20, normalization_alpha=1.0, output_format="translation"):
     """Translates a source file using a translation model (or ensemble).
 
     Args:
@@ -107,6 +108,7 @@ def translate_file(input_file, output_file, session, models, configs,
         minibatch_size: minibatch size in sentences.
         maxibatch_size: number of minibatches to read and sort, pre-translation.
         normalization_alpha: alpha parameter for length normalization.
+        output_format: output format: text (1-best translation or nbest) or alignments (either as json or lists of scores)
     """
 
     def translate_maxibatch(maxibatch, model_set, num_to_target,
@@ -135,7 +137,7 @@ def translate_file(input_file, output_file, session, models, configs,
             y_dummy = numpy.zeros(shape=(len(x),1))
             x, x_mask, _, _ = util.prepare_data(x, y_dummy, configs[0].factors,
                                                 maxlen=None)
-            sample, alignments = model_set.beam_search(
+            sample, alignments = model_set.beam_search(  # alignments shape (batch, num_models, beam, target_seq_len, source_seq_len)
                 session=session,
                 x=x,
                 x_mask=x_mask,
@@ -148,20 +150,16 @@ def translate_file(input_file, output_file, session, models, configs,
         # Put beams into the same order as the input maxibatch.
         tmp = numpy.array(beams, dtype=numpy.object)
         ordered_beams = tmp[idxs.argsort()]
-
-        # Write the translations to the output file.
-        for i, beam in enumerate(ordered_beams):
-            if nbest:
-                num = num_prev_translated + i
-                for sent, cost in beam:
-                    translation = util.seq2words(sent, num_to_target)
-                    line = "{} ||| {} ||| {}\n".format(num, translation,
-                                                       str(cost))
-                    output_file.write(line)
-            else:
-                best_hypo, cost = beam[0]
-                line = util.seq2words(best_hypo, num_to_target) + '\n'
-                output_file.write(line)
+        ordered_alignments = alignments[idxs.argsort()]
+        print("ordered alignments shape {}".format(ordered_alignments.shape))
+        printer = output_handler.OutputHandler(beams=ordered_beams, 
+                                               alignments=ordered_alignments, 
+                                               outfile=output_file, 
+                                               output_format=output_format,
+                                               maxibatch=maxibatch,
+                                               vocab=num_to_target,
+                                               num_prev_translated=num_prev_translated)
+        printer.write() 
 
     _, _, _, num_to_target = util.load_dictionaries(configs[0])
     model_set = InferenceModelSet(models, configs)

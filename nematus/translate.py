@@ -62,7 +62,8 @@ def main(settings):
                              nbest=settings.n_best,
                              minibatch_size=settings.minibatch_size,
                              maxibatch_size=settings.maxibatch_size,
-                             normalization_alpha=settings.normalization_alpha)
+                             normalization_alpha=settings.normalization_alpha,
+                             output_format=settings.output_format)
 
 
 if __name__ == "__main__":
