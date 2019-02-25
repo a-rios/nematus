@@ -2,27 +2,24 @@
 
 """Prints different output formats."""
 
-import logging
-
-import tensorflow as tf
-
-import inference
 import util
 import json
-from collections import OrderedDict
+import sys
 
 
 class OutputHandler(object):
-    def __init__(self, output_file, output_format, vocab):
+    def __init__(self, output_file, output_format, vocab, translation_max_len):
         """
 
         :param output_file:
         :param output_format:
         :param vocab:
+        :param translation_max_len:
         """
         self.output_file = output_file
         self.output_format = output_format
         self.vocab = vocab
+        self.translation_max_len = translation_max_len
 
         if self.output_format == "translation":
             self.write = self.print_translation
@@ -132,12 +129,19 @@ class OutputHandler(object):
             translation = util.seq2words(best_hypo, self.vocab)
             model_idx = 0 # TODO: more than one model
             beam_idx = 0 # TODO: nbest
-            
-            self.output_file.write("{} ||| {} ||| {} ||| {} ||| {} {}".format(num, translation, cost, input_sentence, len(input_sentence.split())+1, len(translation.split())+1))
-            self.output_file.write("\n")
-            
+
             # one line per target word
-            for trg_idx in range(len(translation.split())+1):
+            target_index_len = len(translation.split())
+
+            if target_index_len < self.translation_max_len:
+                target_index_len += 1
+
+            self.output_file.write("{} ||| {} ||| {} ||| {} ||| {} {}".format(num, translation, cost, input_sentence,
+                                                                              len(input_sentence.split()) + 1,
+                                                                              target_index_len))
+            self.output_file.write("\n")
+
+            for trg_idx in range(target_index_len):
                 # print score for each source word
                 source_alignments = [str(alignment[model_idx, beam_idx, trg_idx, src_idx]) for src_idx in range(len(input_sentence.split())+1)]
                 self.output_file.write(" ".join(source_alignments))

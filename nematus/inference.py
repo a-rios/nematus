@@ -167,7 +167,8 @@ def translate_file(input_file, output_file, session, models, configs,
 
     output_handler = OutputHandler(output_file=output_file,
                                    output_format=output_format,
-                                   vocab=num_to_target)
+                                   vocab=num_to_target,
+                                   translation_max_len=configs[0].translation_maxlen)
 
     model_set = InferenceModelSet(models, configs)
 
